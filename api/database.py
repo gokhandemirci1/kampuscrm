@@ -70,7 +70,11 @@ class FinancialTransaction(Base):
 
 
 def init_db():
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("Database tables created/verified")
+    except Exception as e:
+        print(f"Error creating tables: {e}")
     
     # Create initial users
     db = SessionLocal()
@@ -143,12 +147,14 @@ def init_db():
             }
         ]
         
+        created_count = 0
         for user_data in initial_users:
             existing_user = db.query(User).filter(User.email == user_data["email"]).first()
             if not existing_user:
+                hashed_pwd = get_password_hash(user_data["password"])
                 user = User(
                     email=user_data["email"],
-                    hashed_password=get_password_hash(user_data["password"]),
+                    hashed_password=hashed_pwd,
                     can_manage_customers=user_data["can_manage_customers"],
                     can_view_financials=user_data["can_view_financials"],
                     can_manage_partnership_codes=user_data["can_manage_partnership_codes"],
@@ -156,11 +162,18 @@ def init_db():
                     can_manage_access=user_data["can_manage_access"]
                 )
                 db.add(user)
+                created_count += 1
+                print(f"Created user: {user_data['email']}")
+            else:
+                print(f"User already exists: {user_data['email']}")
         
         db.commit()
+        print(f"Database initialization complete. Created {created_count} new users.")
     except Exception as e:
         db.rollback()
         print(f"Error initializing database: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         db.close()
 

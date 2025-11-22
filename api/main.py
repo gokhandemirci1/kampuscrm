@@ -36,10 +36,27 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     try:
+        print("Starting database initialization...")
         init_db()
         print("Database initialized successfully")
+        
+        # Verify users were created
+        db_session = SessionLocal()
+        try:
+            user_count = db_session.query(User).count()
+            print(f"Total users in database: {user_count}")
+            if user_count == 0:
+                print("WARNING: No users found in database!")
+            else:
+                users = db_session.query(User).all()
+                for user in users:
+                    print(f"  - {user.email} (active: {user.is_active})")
+        finally:
+            db_session.close()
     except Exception as e:
         print(f"Error initializing database: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @app.get("/")
@@ -49,18 +66,64 @@ def root():
 @app.get("/api/health")
 def health_check(db: Session = Depends(get_db)):
     try:
+        # Initialize database if needed
+        init_db()
+        
         # Test database connection
         user_count = db.query(User).count()
+        users = db.query(User).all()
+        user_emails = [user.email for user in users]
+        
         return {
             "status": "healthy",
             "database": "connected",
-            "user_count": user_count
+            "user_count": user_count,
+            "users": user_emails
         }
     except Exception as e:
+        import traceback
         return {
             "status": "unhealthy",
             "database": "error",
-            "error": str(e)
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/api/test-login")
+def test_login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    """Test endpoint to check login without authentication (for debugging)"""
+    try:
+        # Initialize database
+        init_db()
+        
+        user_count = db.query(User).count()
+        user = db.query(User).filter(User.email == email).first()
+        
+        if not user:
+            return {
+                "success": False,
+                "error": "User not found",
+                "user_count": user_count,
+                "message": f"No user found with email: {email}. Total users: {user_count}"
+            }
+        
+        from api.auth import verify_password
+        password_valid = verify_password(password, user.hashed_password)
+        
+        return {
+            "success": password_valid,
+            "user_found": True,
+            "password_valid": password_valid,
+            "user_email": user.email,
+            "is_active": user.is_active,
+            "message": "Login test successful" if password_valid else "Password incorrect"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }
 
 
@@ -68,16 +131,34 @@ def health_check(db: Session = Depends(get_db)):
 @app.post("/api/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     try:
+        print(f"Login attempt for email: {form_data.username}")
+        
+        # Ensure database is initialized
+        try:
+            init_db()
+        except Exception as e:
+            print(f"Warning: Database init error (may already exist): {e}")
+        
         user = db.query(User).filter(User.email == form_data.username).first()
         
         if not user:
+            print(f"User not found: {form_data.username}")
+            # Check if any users exist
+            user_count = db.query(User).count()
+            print(f"Total users in database: {user_count}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        if not verify_password(form_data.password, user.hashed_password):
+        print(f"User found: {user.email}, is_active: {user.is_active}")
+        
+        password_valid = verify_password(form_data.password, user.hashed_password)
+        print(f"Password verification result: {password_valid}")
+        
+        if not password_valid:
+            print(f"Password verification failed for: {form_data.username}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -85,6 +166,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             )
         
         if not user.is_active:
+            print(f"User account is inactive: {form_data.username}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive"
@@ -95,6 +177,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             data={"sub": user.email}, expires_delta=access_token_expires
         )
         
+        print(f"Login successful for: {form_data.username}")
+        
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -103,10 +187,12 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Login error: {e}")
+        print(f"Login error: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred during login"
+            detail=f"An error occurred during login: {str(e)}"
         )
 
 
